@@ -4,17 +4,25 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.0"
     }
+    local = {
+      source  = "hashicorp/local"
+      version = "~> 2.4"
+    }
   }
 }
 
-### Credenciais e região ###
+#==========================
+# Credenciais e região
+#==========================
 
 provider "aws" {
   region  = "us-east-1"
   profile = "projetos"
 }
 
-### Variáveis (valores em terraform.tfvars) ###
+#==========================
+# Variáveis (valores em terraform.tfvars)
+#==========================
 
 variable "senha_master" {
   type        = string
@@ -27,7 +35,9 @@ variable "meu_ip" {
   description = "Seu IP público para liberar a porta 3306 (só você). Ex: 203.0.113.44 — use curl -s https://checkip.amazonaws.com"
 }
 
-### VPC e subnets (default da conta) ###
+#==========================
+# VPC e subnets (default da conta)
+#==========================
 
 # VPC padrão da região (não cria recurso novo).
 data "aws_vpc" "default" {
@@ -48,7 +58,9 @@ resource "aws_db_subnet_group" "lab" {
   subnet_ids = data.aws_subnets.default.ids
 }
 
-### Firewall (security group só com seu IP na 3306) ###
+#==========================
+# Firewall (security group só com seu IP na 3306)
+#==========================
 
 resource "aws_security_group" "mysql" {
   name        = "lab-mysql-sg"
@@ -70,7 +82,9 @@ resource "aws_security_group" "mysql" {
   }
 }
 
-### Instância RDS MySQL ###
+#==========================
+# Instância RDS MySQL
+#==========================
 
 resource "aws_db_instance" "mysql" {
   identifier = "lab-mysql-classicmodels"
@@ -97,7 +111,9 @@ resource "aws_db_instance" "mysql" {
   # ↑ destroy sem snapshot final (mais simples para lab).
 }
 
-### Saídas no terminal após apply (terraform output) ###
+#==========================
+# Saídas no terminal após apply (terraform output)
+#==========================
 
 output "endpoint" {
   description = "Host (copie para o cliente MySQL)"
@@ -110,4 +126,19 @@ output "porta" {
 
 output "usuario" {
   value = "admin"
+}
+
+#==========================
+# Grava ../src/.env (host, porta, usuário, senha)
+#==========================
+
+resource "local_file" "rds_env" {
+  filename        = "${path.module}/../src/.env"
+  file_permission = "0600"
+  content         = <<-EOT
+MYSQL_HOST=${aws_db_instance.mysql.address}
+MYSQL_PORT=${aws_db_instance.mysql.port}
+MYSQL_USER=admin
+MYSQL_PASSWORD=${var.senha_master}
+EOT
 }
