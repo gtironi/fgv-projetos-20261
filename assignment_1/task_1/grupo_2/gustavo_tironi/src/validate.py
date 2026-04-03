@@ -1,5 +1,5 @@
-
 import os
+import sys
 
 import envlocal
 import mysql.connector
@@ -37,13 +37,22 @@ conn = mysql.connector.connect(
 )
 cur = conn.cursor()
 
+passed = 0
 # verificação simples de leitura (tabelas e linhas)
 for t in TABELAS:
     cur.execute(f"SELECT COUNT(*) FROM `{t}`")
     n = cur.fetchone()[0]
     esp = LINHAS_ESPERADAS[t]
-    assert n == esp, f"{t}: tem {n}, esperado {esp}"
+    if n == esp:
+        passed += 1
+        print(f"  [ok]  {t:16}  {n:5} linhas (esperado {esp})")
+    else:
+        msg = f"{t}: obtido {n}, esperado {esp}"
+        falhas.append(msg)
+        print(f"  [FAIL]  {t:16}  {n:5} linhas (esperado {esp})")
 
 cur.close()
 conn.close()
-print("validacao ok.")
+
+print("-" * 50)
+print(f"resultado: {passed}/{len(TABELAS)} verificações passed")
