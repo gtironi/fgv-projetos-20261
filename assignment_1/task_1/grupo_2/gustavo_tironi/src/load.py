@@ -14,17 +14,18 @@ conn = mysql.connector.connect(
     user=os.environ.get("MYSQL_USER", "admin"),
     password=os.environ["MYSQL_PASSWORD"],
     port=int(os.environ.get("MYSQL_PORT", "3306")),
+    use_pure=True
 )
-cur = conn.cursor()
 
 # carrega o script de carga
 sql = SQL_FILE.read_text(encoding="utf-8", errors="replace")
-for result in cur.execute(sql, multi=True):
-    if result is not None and result.with_rows:
-        result.fetchall()
+
+for result in conn.cmd_query_iter(sql):
+    if "columns" in result:
+        conn.get_rows()
 
 # finalização padrão
 conn.commit()
-cur.close()
 conn.close()
+
 print("classicmodels carregado.")
