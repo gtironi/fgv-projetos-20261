@@ -13,7 +13,7 @@ O Security Group default (Firewall) da VPC **não** expõe o RDS para a internet
 
 ## Como rodar
 
-Pré-requisito: `terraform.tfvars` com `senha_master` e `meu_ip` (IP público, só números e pontos, sem `/32` no valor da variável).
+Pré-requisito: `terraform.tfvars` com `senha_master` e `meu_ip` (IP público, use https://checkip.amazonaws.com/).
 
 **`terraform init`** — baixa o provider e prepara a pasta.
 
