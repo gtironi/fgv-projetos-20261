@@ -95,15 +95,26 @@ def get_max_order_date(cur) -> date | None:
     return row[0] if row else None
 
 
+def next_weekday(d: date) -> date:
+    """Próximo dia útil após `d` (pula sábado e domingo)."""
+    d = d + timedelta(days=1)
+    while d.weekday() >= 5:  # 5=sábado, 6=domingo
+        d = d + timedelta(days=1)
+    return d
+
+
 def get_baseline_date(cur) -> date:
-    """Retorna a data de referência: max(watermark, MAX(orderDate))."""
+    """
+    Retorna a maior data entre:
+      - watermark
+      - MAX(orderDate)
+      - hoje - 30 dias (força datas recentes para testes de partição na Task 2)
+    """
     wm = get_watermark_date(cur)
     max_date = get_max_order_date(cur)
+    recent_floor = date.today() - timedelta(days=30)
 
-    candidates = [d for d in [wm, max_date] if d is not None]
-    if not candidates:
-        # banco vazio — começa de hoje
-        return date.today()
+    candidates = [d for d in [wm, max_date, recent_floor] if d is not None]
     return max(candidates)
 
 
@@ -141,10 +152,14 @@ def build_payloads(cur, rng: random.Random, count: int) -> list[dict]:
 
     next_order_number = get_next_order_number(cur)
     payloads = []
+    order_date = baseline
 
     for i in range(count):
         order_number = next_order_number + i
-        order_date = baseline + timedelta(days=i + 1)
+        order_date = next_weekday(order_date)
+        required_date = order_date + timedelta(days=7)
+        if required_date.weekday() >= 5:
+            required_date = next_weekday(required_date)
         customer = rng.choice(customers)
 
         num_lines = rng.randint(1, 3)
@@ -164,7 +179,7 @@ def build_payloads(cur, rng: random.Random, count: int) -> list[dict]:
             "order": {
                 "orderNumber": order_number,
                 "orderDate": order_date.isoformat(),
-                "requiredDate": (order_date + timedelta(days=7)).isoformat(),
+                "requiredDate": required_date.isoformat(),
                 "status": "In Process",
                 "comments": f"Pedido simulado A2/Task1 #{i+1}",
                 "customerNumber": customer,
