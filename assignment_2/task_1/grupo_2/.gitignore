@@ -31,3 +31,8 @@ __pycache__/
 .DS_Store
 .vscode/
 .idea/
+
+# ── Lambda build artifacts ──
+**/lambda/build/
+**/lambda/layer_build/
+**/lambda_*.zip
