@@ -450,6 +450,7 @@ resource "local_file" "env" {
     "ATHENA_WORKGROUP=${aws_athena_workgroup.lab.name}",
     "ATHENA_RESULTS_BUCKET=${aws_s3_bucket.athena_results.bucket}",
     "ATHENA_OUTPUT_LOCATION=s3://${aws_s3_bucket.athena_results.bucket}/results/",
+    "LAMBDA_ORDER_GATEWAY=${aws_lambda_function.order_gateway.function_name}",
     "",
   ])
 }

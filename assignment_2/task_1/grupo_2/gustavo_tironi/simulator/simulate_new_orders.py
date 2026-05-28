@@ -2,7 +2,7 @@
 Simula chegada de novos pedidos no banco classicmodels.
 
 Uso:
-    python simulate_new_orders.py [--count N] [--seed S]
+    python simulate_new_orders.py [--count N] [--seed S] [--via-lambda]
 
 - Escolhe customerNumber e productCode existentes aleatoriamente.
 - Insere em orders com orderDate estritamente posterior ao watermark atual
@@ -11,6 +11,10 @@ Uso:
 - NÃO atualiza etl_watermark (responsabilidade do job Glue na Task 2).
 - orderNumber calculado como MAX(orderNumber) + incremento sequencial
   (o schema do classicmodels não usa AUTO_INCREMENT nessa coluna).
+
+Modos de inserção:
+  - default: INSERT direto no RDS (transação local).
+  - --via-lambda: payload enviado para a Lambda gateway, que valida e insere.
 
 Exit code: 0 = sucesso, 1 = falha.
 """
@@ -50,6 +54,11 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Simula novos pedidos no classicmodels")
     p.add_argument("--count", type=int, default=5, help="Número de pedidos a criar (default: 5)")
     p.add_argument("--seed", type=int, default=None, help="Seed para reprodutibilidade")
+    p.add_argument(
+        "--via-lambda",
+        action="store_true",
+        help="Envia pedidos para Lambda gateway (valida antes de inserir).",
+    )
     return p.parse_args()
 
 
@@ -119,9 +128,8 @@ def get_next_order_number(cur) -> int:
     return (cur.fetchone()[0] or 0) + 1
 
 
-def simulate(conn, rng: random.Random, count: int) -> list[dict]:
-    cur = conn.cursor()
-
+def build_payloads(cur, rng: random.Random, count: int) -> list[dict]:
+    """Gera os payloads dos pedidos (leituras read-only no RDS para escolher IDs válidos)."""
     baseline = get_baseline_date(cur)
     log.info("Data de referência (baseline): %s", baseline)
 
@@ -131,17 +139,48 @@ def simulate(conn, rng: random.Random, count: int) -> list[dict]:
     if not customers or not products:
         raise RuntimeError("Banco sem customers ou products — verifique a carga inicial")
 
-    created = []
     next_order_number = get_next_order_number(cur)
+    payloads = []
 
     for i in range(count):
         order_number = next_order_number + i
-        # Cada pedido avança pelo menos 1 dia em relação ao anterior
         order_date = baseline + timedelta(days=i + 1)
         customer = rng.choice(customers)
-        status = "In Process"
-        comments = f"Pedido simulado A2/Task1 #{i+1}"
 
+        num_lines = rng.randint(1, 3)
+        chosen_products = rng.sample(products, min(num_lines, len(products)))
+        details = []
+        for line_num, product_code in enumerate(chosen_products, start=1):
+            price = get_product_price(cur, product_code)
+            price_each = round(price * rng.uniform(0.70, 1.00), 2)
+            details.append({
+                "productCode": product_code,
+                "quantityOrdered": rng.randint(1, 20),
+                "priceEach": price_each,
+                "orderLineNumber": line_num,
+            })
+
+        payloads.append({
+            "order": {
+                "orderNumber": order_number,
+                "orderDate": order_date.isoformat(),
+                "requiredDate": (order_date + timedelta(days=7)).isoformat(),
+                "status": "In Process",
+                "comments": f"Pedido simulado A2/Task1 #{i+1}",
+                "customerNumber": customer,
+            },
+            "details": details,
+        })
+
+    return payloads
+
+
+def insert_direct(conn, payload: dict) -> tuple[bool, str | None]:
+    """Insere direto no RDS em transação. Retorna (ok, erro)."""
+    cur = conn.cursor()
+    order = payload["order"]
+    details = payload["details"]
+    try:
         cur.execute(
             """
             INSERT INTO orders
@@ -149,51 +188,89 @@ def simulate(conn, rng: random.Random, count: int) -> list[dict]:
             VALUES (%s, %s, %s, NULL, %s, %s, %s)
             """,
             (
-                order_number,
-                order_date,
-                order_date + timedelta(days=7),
-                status,
-                comments,
-                customer,
+                order["orderNumber"],
+                order["orderDate"],
+                order["requiredDate"],
+                order["status"],
+                order["comments"],
+                order["customerNumber"],
             ),
         )
-
-        # Pelo menos 1 linha de detalhe, aleatoriamente até 3
-        num_lines = rng.randint(1, 3)
-        chosen_products = rng.sample(products, min(num_lines, len(products)))
-        detail_count = 0
-
-        for line_num, product_code in enumerate(chosen_products, start=1):
-            price = get_product_price(cur, product_code)
-            # Pequena variação sobre o MSRP (70–100%)
-            price_each = round(price * rng.uniform(0.70, 1.00), 2)
-            quantity = rng.randint(1, 20)
-
+        for d in details:
             cur.execute(
                 """
                 INSERT INTO orderdetails
                     (orderNumber, productCode, quantityOrdered, priceEach, orderLineNumber)
                 VALUES (%s, %s, %s, %s, %s)
                 """,
-                (order_number, product_code, quantity, price_each, line_num),
+                (
+                    order["orderNumber"],
+                    d["productCode"],
+                    d["quantityOrdered"],
+                    d["priceEach"],
+                    d["orderLineNumber"],
+                ),
             )
-            detail_count += 1
-
         conn.commit()
-        created.append(
-            {
-                "order_number": order_number,
-                "order_date": order_date,
-                "customer": customer,
-                "detail_lines": detail_count,
-            }
-        )
+        return True, None
+    except Exception as exc:
+        conn.rollback()
+        return False, str(exc)
+    finally:
+        cur.close()
+
+
+def insert_via_lambda(lambda_client, function_name: str, payload: dict) -> tuple[bool, str | None]:
+    """Envia payload para Lambda gateway. Retorna (ok, erro)."""
+    resp = lambda_client.invoke(
+        FunctionName=function_name,
+        Payload=json.dumps(payload).encode("utf-8"),
+    )
+    body = json.loads(resp["Payload"].read())
+    if body.get("status") == "ok":
+        return True, None
+    return False, "; ".join(body.get("errors") or ["erro desconhecido"])
+
+
+def simulate(conn, rng: random.Random, count: int, via_lambda: bool) -> list[dict]:
+    cur = conn.cursor()
+    payloads = build_payloads(cur, rng, count)
+    cur.close()
+
+    lambda_client = None
+    function_name = None
+    if via_lambda:
+        function_name = os.environ.get("LAMBDA_ORDER_GATEWAY")
+        if not function_name:
+            raise RuntimeError("LAMBDA_ORDER_GATEWAY não definido no .env")
+        lambda_client = boto3.client("lambda", region_name=REGION)
+        log.info("Modo: via Lambda gateway (%s)", function_name)
+    else:
+        log.info("Modo: INSERT direto no RDS")
+
+    created = []
+    for p in payloads:
+        order = p["order"]
+        if via_lambda:
+            ok, err = insert_via_lambda(lambda_client, function_name, p)
+        else:
+            ok, err = insert_direct(conn, p)
+
+        if not ok:
+            log.error("  [REJECTED] orderNumber=%d: %s", order["orderNumber"], err)
+            continue
+
+        created.append({
+            "order_number": order["orderNumber"],
+            "order_date": order["orderDate"],
+            "customer": order["customerNumber"],
+            "detail_lines": len(p["details"]),
+        })
         log.info(
             "  [ok] orderNumber=%d date=%s customerNumber=%d details=%d",
-            order_number, order_date, customer, detail_count,
+            order["orderNumber"], order["orderDate"], order["customerNumber"], len(p["details"]),
         )
 
-    cur.close()
     return created
 
 
@@ -223,7 +300,7 @@ def main() -> int:
     try:
         secret = get_secret()
         conn = connect(secret)
-        created = simulate(conn, rng, args.count)
+        created = simulate(conn, rng, args.count, args.via_lambda)
         print_summary(created)
         return 0
     except Exception as exc:
