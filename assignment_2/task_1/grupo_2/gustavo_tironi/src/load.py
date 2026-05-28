@@ -22,6 +22,7 @@ import boto3
 import mysql.connector
 from mysql.connector import Error as MySQLError
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import envlocal
 
 envlocal.load()
@@ -117,7 +118,6 @@ def main() -> int:
         conn = connect_with_retry(secret)
         run_load(conn, sql)
         log.info("Passo 5/5 — classicmodels carregado com sucesso")
-        return 0
     except Exception as exc:
         log.error("Carga falhou: %s", exc)
         return 1
@@ -125,6 +125,10 @@ def main() -> int:
         if conn is not None and conn.is_connected():
             conn.close()
             log.info("  conexão fechada")
+
+    log.info("Passo 6/6 — Inicializando watermark incremental")
+    import init_watermark
+    return init_watermark.main()
 
 
 if __name__ == "__main__":
