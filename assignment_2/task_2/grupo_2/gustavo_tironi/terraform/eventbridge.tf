@@ -1,25 +1,27 @@
 # ==========================================================================
-# EventBridge — agenda execuções automáticas do Glue job incremental.
+# EventBridge Scheduler — agenda execuções automáticas do Glue job incremental.
+#
 #
 # IAM: usa local.glue_role_arn (LabRole, já definido em main.tf), sem criar
-# role nova — não é permitido no AWS Academy. LabRole é confiável (trust
-# policy) por Glue/Lambda; pode não ser por events.amazonaws.com. Se o
-# `apply` deste arquivo falhar com erro de IAM/AssumeRole, esse é o motivo
-# esperado — ver README para o fallback.
+# role nova — não é permitido no AWS Academy.
 # ==========================================================================
 
-resource "aws_cloudwatch_event_rule" "weekly_etl" {
-  name                = "classicmodels-etl-weekly"
-  description         = "Dispara o Glue job incremental semanalmente"
+resource "aws_scheduler_schedule" "weekly_etl" {
+  name       = "classicmodels-etl-weekly"
+  group_name = "default"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
   schedule_expression = "cron(0 12 ? * MON *)"
-}
 
-resource "aws_cloudwatch_event_target" "glue_job" {
-  rule     = aws_cloudwatch_event_rule.weekly_etl.name
-  arn      = aws_glue_job.etl.arn
-  role_arn = local.glue_role_arn
+  target {
+    arn      = "arn:aws:scheduler:::aws-sdk:glue:startJobRun"
+    role_arn = local.glue_role_arn
 
-  glue_parameters {
-    job_name = aws_glue_job.etl.name
+    input = jsonencode({
+      JobName = aws_glue_job.etl.name
+    })
   }
 }
