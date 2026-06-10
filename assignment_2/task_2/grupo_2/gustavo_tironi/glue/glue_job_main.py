@@ -51,6 +51,13 @@ S3 = f"s3://{args['S3_BUCKET']}/analytics"
 log(f"S3 output prefix = {S3}")
 
 
+def path_exists(path):
+    """True se o prefixo S3 já tem algum objeto (usado para checar partições/tabelas já gravadas)."""
+    jvm = sc._jvm
+    fs = jvm.org.apache.hadoop.fs.FileSystem.get(jvm.java.net.URI(path), sc._jsc.hadoopConfiguration())
+    return fs.exists(jvm.org.apache.hadoop.fs.Path(path))
+
+
 # ── watermark (pymysql — fora do Spark, é um valor escalar) ────────────────────
 def db_connect():
     return pymysql.connect(
@@ -113,9 +120,26 @@ def read_table(table):
     return df
 
 
-# orders: bootstrap = tabela inteira; incremental = só pedidos após o watermark
+def read_in(table, col, values):
+    """Opção B — lê só as linhas de `table` cujo `col` está em `values` (as
+    chaves afetadas pelo delta). Lista vazia => conjunto vazio, mantendo o
+    schema da tabela (delta sem pedidos novos)."""
+    if not values:
+        sub = f"(SELECT * FROM {table} WHERE 1=0) AS t"
+    else:
+        in_list = ", ".join(
+            str(v) if isinstance(v, int) else "'%s'" % str(v).replace("'", "''")
+            for v in values
+        )
+        sub = f"(SELECT * FROM {table} WHERE {col} IN ({in_list})) AS t"
+    log(f"  reading `{table}` filtered by {col} ({len(values)} affected key[s]) ...")
+    return spark.read.format("jdbc").options(**jdbc_opts, dbtable=sub).load()
+
 if is_bootstrap:
     orders = read_table("orders")
+    orderdetails = read_table("orderdetails")
+    customers = read_table("customers")
+    products = read_table("products")
 else:
     log(f"  reading `orders` delta (orderDate > {last_date.isoformat()}) ...")
     t0 = time.time()
@@ -126,9 +150,15 @@ else:
     n = orders.count()
     log(f"  read `orders` delta rows={n} elapsed={time.time()-t0:.1f}s")
 
-orderdetails = read_table("orderdetails")
-customers    = read_table("customers")
-products     = read_table("products")
+    # chaves afetadas: pedidos -> clientes; itens dos pedidos -> produtos
+    order_nums = [r[0] for r in orders.select("orderNumber").distinct().collect()]
+    orderdetails = read_in("orderdetails", "orderNumber", order_nums)
+    affected_custs = [r[0] for r in orders.select("customerNumber").distinct().collect()]
+    affected_prods = [r[0] for r in orderdetails.select("productCode").distinct().collect()]
+    customers = read_in("customers", "customerNumber", affected_custs)
+    products = read_in("products", "productCode", affected_prods)
+
+# tabelas de apoio (pequenas, sem chave por pedido) — sempre completas
 productlines = read_table("productlines")
 offices = read_table("offices")
 employees = read_table("employees")
@@ -190,8 +220,6 @@ dim_countries = customers.join(
 )
 
 # dim_dates — derivado do `orders` (delta ou completo no bootstrap).
-# Como o watermark garante orderDate sempre crescente, as datas daqui nunca
-# colidem com as já gravadas em runs anteriores -> seguro fazer append.
 log("building dim_dates")
 dim_dates = orders.select(F.col("orderDate").alias("full_date")).distinct().withColumn(
     "date_key",  F.date_format(F.col("full_date"), "yyyyMMdd").cast("int"),
@@ -223,6 +251,22 @@ fact_orders = fact_base.select(
     F.year("orderDate").alias("order_year"),
     F.month("orderDate").alias("order_month"),
 )
+
+if not is_bootstrap:
+    touched = [
+        (r["order_year"], r["order_month"])
+        for r in fact_orders.select("order_year", "order_month").distinct().collect()
+    ]
+    existing_paths = [
+        f"{S3}/fact_orders/order_year={y}/order_month={m}/"
+        for y, m in touched
+        if path_exists(f"{S3}/fact_orders/order_year={y}/order_month={m}/")
+    ]
+    if existing_paths:
+        log(f"  dedup fact_orders against {len(existing_paths)} existing partition(s)")
+        existing_keys = spark.read.parquet(*existing_paths).select("order_id", "product_id").distinct()
+        fact_orders = fact_orders.join(existing_keys, on=["order_id", "product_id"], how="left_anti")
+
 log("STAGE 4 done — transforms defined (lazy)")
 
 
@@ -254,19 +298,32 @@ def write_catalog(df, name, partition_keys=None):
 
 
 def purge_and_write(df, name):
-    """Tabelas mestre: limpa o prefixo e reescreve por completo (overwrite)."""
+    """Limpa o prefixo e reescreve por completo (overwrite). O sink do Glue só
+    adiciona arquivos, então purgamos antes para o resultado ser um overwrite."""
     path = f"{S3}/{name}/"
     log(f"  purging {path} before full rewrite ...")
     glueContext.purge_s3_path(path, options={"retentionPeriod": 0})
     write_catalog(df, name)
 
 
+def upsert_dimension(new_df, name, key):
+    """Opção B — atualiza só as linhas afetadas pelos pedidos novos: remove do
+    histórico em S3 as chaves presentes no delta e regrava as versões novas por
+    cima (upsert por `key`). Em bootstrap não há histórico, então grava a
+    dimensão completa. Idempotente em retry (mesmo delta -> mesmo resultado)."""
+    if not is_bootstrap and path_exists(f"{S3}/{name}/"):
+        existing = spark.read.parquet(f"{S3}/{name}/")
+        kept = existing.join(new_df.select(key).distinct(), key, "left_anti")
+        new_df = new_df.unionByName(kept)
+    purge_and_write(new_df, name)
+
+
 try:
     write_catalog(fact_orders, "fact_orders", partition_keys=["order_year", "order_month"])
-    write_catalog(dim_dates, "dim_dates")
-    purge_and_write(dim_customers, "dim_customers")
-    purge_and_write(dim_products, "dim_products")
-    purge_and_write(dim_countries, "dim_countries")
+    upsert_dimension(dim_dates, "dim_dates", "date_key")
+    upsert_dimension(dim_customers, "dim_customers", "customer_id")
+    upsert_dimension(dim_products, "dim_products", "product_id")
+    upsert_dimension(dim_countries, "dim_countries", "country")
     log("STAGE 5 done — Parquet + Catalog atualizados")
 
     new_max_date = orders.agg(F.max("orderDate")).first()[0]
