@@ -306,7 +306,7 @@ resource "aws_glue_crawler" "fallback" {
   role          = local.glue_role_arn
 
   s3_target {
-    path = "s3://${aws_s3_bucket.data.bucket}/data/"
+    path = "s3://${aws_s3_bucket.data.bucket}/analytics/"
   }
 
   schema_change_policy {
@@ -393,6 +393,7 @@ resource "aws_glue_job" "etl" {
     "--job-language"                     = "python"
     "--enable-continuous-cloudwatch-log" = "true"
     "--enable-glue-datacatalog"          = "true"
+    "--additional-python-modules"        = "pymysql"
   }
 
   depends_on = [aws_s3_object.glue_script]
