@@ -121,9 +121,7 @@ def read_table(table):
 
 
 def read_in(table, col, values):
-    """Opção B — lê só as linhas de `table` cujo `col` está em `values` (as
-    chaves afetadas pelo delta). Lista vazia => conjunto vazio, mantendo o
-    schema da tabela (delta sem pedidos novos)."""
+    """Lê de `table` apenas as linhas cujo `col` está em `values`."""
     if not values:
         sub = f"(SELECT * FROM {table} WHERE 1=0) AS t"
     else:
@@ -200,10 +198,8 @@ dim_products = products.join(productlines, "productLine", "left").select(
     F.col("productVendor").alias("product_vendor"),
 )
 
-# dim_countries — tabela mestre, reconstruída por completo a cada run.
-# country é a PK natural; territory vem do escritório do sales rep, então um
-# país com clientes atendidos por reps de múltiplos escritórios/territórios
-# geraria linhas duplicadas. Agrega para o primeiro territory não-nulo por país.
+# country é a PK natural; agrega o primeiro territory não-nulo por país,
+# evitando duplicar linhas quando reps de territórios diferentes atendem o mesmo país.
 log("building dim_countries")
 dim_countries = customers.join(
     employees.select("employeeNumber", "officeCode"),
@@ -298,8 +294,7 @@ def write_catalog(df, name, partition_keys=None):
 
 
 def purge_and_write(df, name):
-    """Limpa o prefixo e reescreve por completo (overwrite). O sink do Glue só
-    adiciona arquivos, então purgamos antes para o resultado ser um overwrite."""
+    """Purga o prefixo e reescreve (o sink do Glue só faz append)."""
     path = f"{S3}/{name}/"
     log(f"  purging {path} before full rewrite ...")
     glueContext.purge_s3_path(path, options={"retentionPeriod": 0})
@@ -307,10 +302,8 @@ def purge_and_write(df, name):
 
 
 def upsert_dimension(new_df, name, key):
-    """Opção B — atualiza só as linhas afetadas pelos pedidos novos: remove do
-    histórico em S3 as chaves presentes no delta e regrava as versões novas por
-    cima (upsert por `key`). Em bootstrap não há histórico, então grava a
-    dimensão completa. Idempotente em retry (mesmo delta -> mesmo resultado)."""
+    """Upsert por `key`: remove do histórico as chaves presentes em `new_df`
+    e regrava por cima."""
     if not is_bootstrap and path_exists(f"{S3}/{name}/"):
         existing = spark.read.parquet(f"{S3}/{name}/")
         kept = existing.join(new_df.select(key).distinct(), key, "left_anti")

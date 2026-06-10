@@ -1,10 +1,6 @@
-# ==========================================================================
 # EventBridge Scheduler — agenda execuções automáticas do Glue job incremental.
-#
-#
-# IAM: usa local.glue_role_arn (LabRole, já definido em main.tf), sem criar
-# role nova — não é permitido no AWS Academy.
-# ==========================================================================
+# IAM: usa local.glue_role_arn (LabRole, já definido em main.tf); criar uma
+# role dedicada não é permitido no AWS Academy.
 
 resource "aws_scheduler_schedule" "weekly_etl" {
   name       = "classicmodels-etl-weekly"

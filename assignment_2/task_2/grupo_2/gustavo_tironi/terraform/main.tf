@@ -179,7 +179,8 @@ resource "aws_db_instance" "mysql" {
 # ==========================
 
 resource "aws_s3_bucket" "data" {
-  bucket = var.s3_bucket_name
+  bucket        = var.s3_bucket_name
+  force_destroy = true
 }
 
 # ==========================
