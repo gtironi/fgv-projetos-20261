@@ -35,7 +35,7 @@ import os
 from datetime import date, datetime
 
 import boto3
-import mysql.connector
+import pymysql
 
 SECRET_ARN = os.environ["SECRET_ARN"]
 DB_NAME = os.environ.get("DB_NAME", "classicmodels")
@@ -49,14 +49,13 @@ def get_secret() -> dict:
 
 
 def connect(secret: dict):
-    return mysql.connector.connect(
+    return pymysql.connect(
         host=secret["host"],
         user=secret["username"],
         password=secret["password"],
         port=int(secret["port"]),
         database=DB_NAME,
-        use_pure=True,
-        connection_timeout=10,
+        connect_timeout=10,
         autocommit=False,
     )
 
@@ -201,5 +200,5 @@ def lambda_handler(event, context):
                 pass
         return {"status": "rejected", "orderNumber": order_number, "errors": [str(exc)]}
     finally:
-        if conn is not None and conn.is_connected():
+        if conn is not None and conn.open:
             conn.close()

@@ -7,13 +7,13 @@
 #   - Sem flag, simulate insere direto no RDS (gate desativado).
 #
 # Empacotamento:
-#   - mysql-connector-python vai em um Lambda Layer (reusável, mantém o
-#     pacote do handler leve).
+#   - pymysql vai em um Lambda Layer (reusável, mantém o pacote do handler
+#     leve — pymysql é puro Python, sem partes compiladas).
 #   - O handler vai num ZIP só com order_gateway.py.
 # ==========================================================================
 
 # ---------------------------------------------------------------------------
-# Layer: mysql-connector-python.
+# Layer: pymysql.
 #   pip install em layer_build/python/ → AWS Lambda monta esse path no
 #   PYTHONPATH automaticamente quando a layer é anexada à função.
 # ---------------------------------------------------------------------------
@@ -43,7 +43,7 @@ data "archive_file" "lambda_layer_zip" {
 
 resource "aws_lambda_layer_version" "mysql_connector" {
   layer_name          = "classicmodels-mysql-connector"
-  description         = "mysql-connector-python para Lambdas do lab"
+  description         = "pymysql para Lambdas do lab"
   filename            = data.archive_file.lambda_layer_zip.output_path
   source_code_hash    = data.archive_file.lambda_layer_zip.output_base64sha256
   compatible_runtimes = ["python3.11"]
