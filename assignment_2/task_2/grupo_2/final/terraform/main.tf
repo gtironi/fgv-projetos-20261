@@ -298,6 +298,78 @@ resource "aws_glue_catalog_database" "analytics" {
   name = "classicmodels_analytics"
 }
 
+# Tabela fact_orders com partition projection — Athena descobre partições
+# automaticamente sem MSCK REPAIR TABLE nem crawler.
+resource "aws_glue_catalog_table" "fact_orders" {
+  name          = "fact_orders"
+  database_name = aws_glue_catalog_database.analytics.name
+  table_type    = "EXTERNAL_TABLE"
+
+  parameters = {
+    EXTERNAL                       = "TRUE"
+    "classification"               = "parquet"
+    "projection.enabled"           = "true"
+    "projection.order_year.type"   = "integer"
+    "projection.order_year.range"  = "2000,2100"
+    "projection.order_month.type"  = "integer"
+    "projection.order_month.range" = "1,12"
+    "storage.location.template"    = "s3://${aws_s3_bucket.data.bucket}/analytics/fact_orders/order_year=$${order_year}/order_month=$${order_month}/"
+  }
+
+  partition_keys {
+    name = "order_year"
+    type = "int"
+  }
+
+  partition_keys {
+    name = "order_month"
+    type = "int"
+  }
+
+  storage_descriptor {
+    location      = "s3://${aws_s3_bucket.data.bucket}/analytics/fact_orders/"
+    input_format  = "org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat"
+    output_format = "org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat"
+
+    ser_de_info {
+      serialization_library = "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe"
+    }
+
+    columns {
+      name = "order_id"
+      type = "int"
+    }
+    columns {
+      name = "customer_id"
+      type = "int"
+    }
+    columns {
+      name = "product_id"
+      type = "string"
+    }
+    columns {
+      name = "order_date_key"
+      type = "int"
+    }
+    columns {
+      name = "country_key"
+      type = "string"
+    }
+    columns {
+      name = "quantity_ordered"
+      type = "int"
+    }
+    columns {
+      name = "price_each"
+      type = "double"
+    }
+    columns {
+      name = "sales_amount"
+      type = "double"
+    }
+  }
+}
+
 # FALLBACK ONLY — não executar em fluxo normal.
 # Uso manual: aws glue start-crawler --name classicmodels-fallback-crawler
 resource "aws_glue_crawler" "fallback" {

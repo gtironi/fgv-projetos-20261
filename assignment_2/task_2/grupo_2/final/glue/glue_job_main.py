@@ -106,6 +106,10 @@ last_date, last_status = get_watermark()
 is_bootstrap = last_status in (None, "NEVER_RUN")
 log(f"watermark: last_processed_order_date={last_date} last_run_status={last_status} bootstrap={is_bootstrap}")
 
+# Marca RUNNING imediatamente — permite detectar jobs travados consultando
+# last_run_status='RUNNING' com last_run_at muito antigo.
+update_watermark("RUNNING")
+
 
 # ── extract ───────────────────────────────────────────────────────────────────
 log("STAGE 3 — extract tables from MySQL via JDBC")
@@ -274,8 +278,22 @@ from awsglue.dynamicframe import DynamicFrame
 CATALOG_DB = args["CATALOG_DATABASE"]
 
 
+def write_s3(df, name, partition_keys=None):
+    """Escreve Parquet em S3 com particionamento. Não toca no Glue Catalog
+    (fact_orders usa partition projection declarada no Terraform)."""
+    t0 = time.time()
+    path = f"{S3}/{name}/"
+    log(f"  writing {name} → {path} ...")
+    writer = df.write.mode("append").format("parquet")
+    if partition_keys:
+        writer = writer.partitionBy(*partition_keys)
+    writer.save(path)
+    log(f"  wrote {name} elapsed={time.time()-t0:.1f}s")
+
+
 def write_catalog(df, name, partition_keys=None):
-    """Escreve Parquet em S3 (append) e registra/atualiza tabela no Glue Catalog."""
+    """Escreve Parquet em S3 e registra/atualiza tabela no Glue Catalog.
+    Usado apenas para dimensões (sem partition projection)."""
     t0 = time.time()
     log(f"  writing {name} → s3 + catalog ({CATALOG_DB}.{name}) ...")
     dyf = DynamicFrame.fromDF(df, glueContext, name)
@@ -312,7 +330,8 @@ def upsert_dimension(new_df, name, key):
 
 
 try:
-    write_catalog(fact_orders, "fact_orders", partition_keys=["order_year", "order_month"])
+    # fact_orders: escreve só o Parquet — tabela já declarada no Catalog com partition projection
+    write_s3(fact_orders, "fact_orders", partition_keys=["order_year", "order_month"])
     upsert_dimension(dim_dates, "dim_dates", "date_key")
     upsert_dimension(dim_customers, "dim_customers", "customer_id")
     upsert_dimension(dim_products, "dim_products", "product_id")
